@@ -12,21 +12,47 @@ from ClipCap import ClipCaptionModel
 from transformers import AutoTokenizer
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModel
 from sentence_transformers import SentenceTransformer
+import sys
+print("Starting script...", file=sys.stderr, flush=True)
+
 from utils import compose_discrete_prompts
+print("Imported compose_discrete_prompts", file=sys.stderr, flush=True)
+
 from search import greedy_search, beam_search, opt_search
-from utils.detect_utils import retrieve_concepts
+print("Imported search functions", file=sys.stderr, flush=True)
+
+try:
+    from utils.detect_utils import retrieve_concepts
+    print("Imported retrieve_concepts from detect_utils", file=sys.stderr, flush=True)
+except ImportError:
+    retrieve_concepts = None
+    print("retrieve_concepts not available (detect_utils not found)", file=sys.stderr, flush=True)
+
+try:
+    from utils.entity_filtering_utils import retrieve_concepts_ef
+    print("Imported retrieve_concepts_ef", file=sys.stderr, flush=True)
+except ImportError as e:
+    print(f"Warning: Failed to import retrieve_concepts_ef: {e}", file=sys.stderr, flush=True)
+    retrieve_concepts_ef = None
+
 from models.clip_utils import CLIP
+print("Imported CLIP", file=sys.stderr, flush=True)
+
 import json
 
 @torch.no_grad()
 def main(args) -> None:
+    print("Entering main function...", file=sys.stderr, flush=True)
+    
     # initializing
     device = args.device
     cpu_device = torch.device('cpu')
     clip_name = args.clip_model.replace('/', '') 
     clip_hidden_size = 640 if 'RN' in args.clip_model else 512
+    print(f"Device: {device}, Clip hidden size: {clip_hidden_size}", file=sys.stderr, flush=True)
 
     # loading model
+    print("Loading language model...", file=sys.stderr, flush=True)
     # Support local path: use local path if exists, otherwise use Hugging Face ID
     if os.path.exists(args.language_model):
         language_model_path = args.language_model
@@ -38,11 +64,20 @@ def main(args) -> None:
     # Save original model ID for later use
     language_model_id = args.language_model
     
+    print(f"Loading tokenizer from: {language_model_path}", file=sys.stderr, flush=True)
     tokenizer = AutoTokenizer.from_pretrained(language_model_path, local_files_only=args.offline_mode)
+    print("Tokenizer loaded", file=sys.stderr, flush=True)
+    
+    print(f"Creating ClipCaptionModel...", file=sys.stderr, flush=True)
     model = ClipCaptionModel(args.continuous_prompt_length, args.clip_project_length, clip_hidden_size, gpt_type = language_model_id)
+    print(f"Loading model weights from: {args.weight_path}", file=sys.stderr, flush=True)
     model.load_state_dict(torch.load(args.weight_path, map_location = device), strict = False)
     model.to(device)
+    print("Model loaded and moved to device", file=sys.stderr, flush=True)
+    
+    print(f"Loading CLIP encoder: {args.clip_model}", file=sys.stderr, flush=True)
     encoder, preprocess = clip.load(args.clip_model, device = device)
+    print("CLIP encoder loaded", file=sys.stderr, flush=True)
 
     # Support local path for CLIP model (for retrieval)
     if os.path.exists(args.vl_model):
@@ -85,14 +120,20 @@ def main(args) -> None:
     print('Load Textual Scene Graph parser from the checkpoint {}.'.format(parser_checkpoint_path))
 
     # prepare memory bank
+    print("Loading memory bank...", file=sys.stderr, flush=True)
     memory_id = args.memory_id
     memory_caption_path = os.path.join(f"data/memory/{memory_id}", "memory_captions.json")
     memory_clip_embedding_file = os.path.join(f"data/memory/{memory_id}", "memory_clip_embeddings.pt")
     memory_wte_embedding_file = os.path.join(f"data/memory/{memory_id}", "memory_wte_embeddings.pt")
+    
+    print(f"Loading CLIP embeddings from: {memory_clip_embedding_file}", file=sys.stderr, flush=True)
     memory_clip_embeddings = torch.load(memory_clip_embedding_file)
+    print(f"Loading SentenceBERT embeddings from: {memory_wte_embedding_file}", file=sys.stderr, flush=True)
     memory_wte_embeddings = torch.load(memory_wte_embedding_file)
+    print(f"Loading captions from: {memory_caption_path}", file=sys.stderr, flush=True)
     with open(memory_caption_path, 'r') as f:
         memory_captions = json.load(f)
+    print(f"Memory bank loaded: {len(memory_captions)} captions", file=sys.stderr, flush=True)
 
     # huge memeory bank cannot load on GPU
     if memory_id == 'cc3m' or memory_id == 'ss1m':
@@ -104,11 +145,14 @@ def main(args) -> None:
         vl_model_retrieve = vl_model
         retrieve_on_CPU = False
 
+    print(f"Processing image: {args.image_path}", file=sys.stderr, flush=True)
     image = preprocess(Image.open(args.image_path)).unsqueeze(dim = 0).to(device)
     image_features = encoder.encode_image(image).float()
     image_features /= image_features.norm(2, dim = -1, keepdim = True)
     continuous_embeddings = model.mapping_network(image_features).view(-1, args.continuous_prompt_length, model.gpt_hidden_size)
+    
     if args.using_hard_prompt:
+        print("Using hard prompt, starting retrieval...", file=sys.stderr, flush=True)
         batch_image_embeds = vl_model.compute_image_representation_from_image_path(args.image_path)
 
         if retrieve_on_CPU != True:
@@ -124,11 +168,31 @@ def main(args) -> None:
         select_memory_ids = clip_score.topk(args.memory_caption_num, dim=-1)[1].squeeze(0)
         select_memory_captions = [memory_captions[id] for id in select_memory_ids]
         select_memory_wte_embeddings = memory_wte_embeddings[select_memory_ids]
-        detected_objects = retrieve_concepts(parser_model=parser_model, parser_tokenizer=parser_tokenizer,
-                                             wte_model=wte_model,
-                                             select_memory_captions=select_memory_captions,
-                                             image_embeds=batch_image_embeds,
-                                             device=device)
+        print(f"Retrieved {len(select_memory_captions)} memory captions", file=sys.stderr, flush=True)
+        
+        # Filter: Extract key concepts using Entity Filtering (EF) or Retrieve-then-Filter
+        if args.use_entity_filtering:
+            print("Using Entity Filtering (EF) method...", file=sys.stderr, flush=True)
+            # Use Entity Filtering (EF) method
+            detected_objects = retrieve_concepts_ef(
+                select_memory_captions=select_memory_captions,
+                filter_method=args.ef_filter_method,
+                threshold=args.ef_threshold,
+                alpha=args.ef_alpha,
+                max_entities=args.max_num_of_entities
+            )
+        else:
+            # Use original Retrieve-then-Filter method
+            print("Using Retrieve-then-Filter method...", file=sys.stderr, flush=True)
+            if retrieve_concepts is None:
+                raise ImportError("retrieve_concepts not available. Please install MeaCap modules or use --use_entity_filtering")
+            print("Calling retrieve_concepts...", file=sys.stderr, flush=True)
+            detected_objects = retrieve_concepts(parser_model=parser_model, parser_tokenizer=parser_tokenizer,
+                                                 wte_model=wte_model,
+                                                 select_memory_captions=select_memory_captions,
+                                                 image_embeds=batch_image_embeds,
+                                                 device=device)
+            print("retrieve_concepts completed", file=sys.stderr, flush=True)
 
         print("memory concepts:", detected_objects)
         discrete_tokens = compose_discrete_prompts(tokenizer, detected_objects).unsqueeze(dim = 0).to(args.device)
@@ -185,7 +249,22 @@ if __name__ == '__main__':
     parser.add_argument("--memory_caption_path", type=str, default='data/memory/coco/memory_captions.json')
     parser.add_argument("--memory_caption_num", type=int, default=5)
     parser.add_argument("--offline_mode", action='store_true', default=False, help='Use offline mode (local_files_only=True)')
+    
+    # Entity Filtering (EF) arguments
+    parser.add_argument("--use_entity_filtering", action='store_true', default=False, 
+                       help='Use Entity Filtering (EF) instead of Retrieve-then-Filter for concept extraction')
+    parser.add_argument("--ef_filter_method", type=str, default='threshold', 
+                       choices=['threshold', 'normal', 'log_normal'],
+                       help='Filter method for Entity Filtering: threshold, normal, or log_normal')
+    parser.add_argument("--ef_threshold", type=int, default=1,
+                       help='Frequency threshold for threshold-based filtering (used when ef_filter_method=threshold)')
+    parser.add_argument("--ef_alpha", type=float, default=1.0,
+                       help='Alpha parameter for normal/log_normal filtering (used when ef_filter_method=normal/log_normal)')
+    parser.add_argument("--max_num_of_entities", type=int, default=5,
+                       help='Maximum number of entities to extract')
     args = parser.parse_args()
-    print('args: {}\n'.format(vars(args)))
+    print('args: {}\n'.format(vars(args)), flush=True)
 
+    print("Calling main function...", file=sys.stderr, flush=True)
     main(args)
+    print("Script completed!", file=sys.stderr, flush=True)

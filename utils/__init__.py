@@ -33,6 +33,14 @@ except ImportError:
     # MeaCap模块不存在，忽略
     pass
 
+# Entity Filtering (EF) 模块导入
+try:
+    from .entity_filtering_utils import retrieve_concepts_ef, retrieve_concepts_entity_filtering
+except ImportError:
+    # EF模块不存在，忽略
+    retrieve_concepts_ef = None
+    retrieve_concepts_entity_filtering = None
+
 __all__ = ['compose_discrete_prompts', 'noise_injection', 'parse_entities', 'padding_captions', 'entities_process']
 
 
