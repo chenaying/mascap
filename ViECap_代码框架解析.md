@@ -405,3 +405,12 @@ bash scripts/eval_coco.sh train_coco 0 '' 14
 **注意**：本项目主要在Linux环境下运行，Windows环境可能需要调整路径和脚本格式。
 
 
+
+
+
+
+
+
+
+
+
