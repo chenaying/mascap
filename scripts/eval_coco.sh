@@ -36,4 +36,16 @@ $OTHER_ARGS \
 |& tee -a  ${COCO_LOG_FILE}
 
 echo "==========================COCO EVAL================================"
-python evaluation/cocoeval.py --result_file_path $COCO_OUT_PATH/coco*.json |& tee -a  ${COCO_LOG_FILE}
+# Use specific file name to avoid matching multiple files
+RESULT_FILE="$COCO_OUT_PATH/coco_generated_captions.json"
+if [ ! -f "$RESULT_FILE" ]; then
+    echo "Warning: Result file not found: $RESULT_FILE"
+    echo "Searching for alternative files..."
+    RESULT_FILE=$(find $COCO_OUT_PATH -name "coco_generated_captions.json" | head -1)
+    if [ -z "$RESULT_FILE" ]; then
+        echo "Error: No result file found in $COCO_OUT_PATH"
+        exit 1
+    fi
+fi
+echo "Evaluating: $RESULT_FILE"
+python evaluation/cocoeval.py --result_file_path "$RESULT_FILE" |& tee -a  ${COCO_LOG_FILE}
