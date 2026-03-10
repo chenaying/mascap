@@ -17,11 +17,7 @@ from sentence_transformers import SentenceTransformer
 
 from ClipCap import ClipCaptionModel
 from utils import compose_discrete_prompts
-try:
-    from utils.detect_utils import retrieve_concepts
-except ImportError:
-    retrieve_concepts = None
-from utils.entity_filtering_utils import retrieve_concepts_ef
+from utils.detect_utils import retrieve_concepts
 from models.clip_utils import CLIP
 from search import beam_search, greedy_search, opt_search
 
@@ -106,28 +102,15 @@ def validation_coco_flickr30k_meacap(
             select_memory_ids = clip_score.topk(args.memory_caption_num, dim=-1)[1].squeeze(0)
             select_memory_captions = [memory_captions[id] for id in select_memory_ids]
 
-            # Filter: Extract key concepts using Entity Filtering (EF) or Retrieve-then-Filter
-            if args.use_entity_filtering:
-                # Use Entity Filtering (EF) method
-                detected_objects = retrieve_concepts_ef(
-                    select_memory_captions=select_memory_captions,
-                    filter_method=args.ef_filter_method,
-                    threshold=args.ef_threshold,
-                    alpha=args.ef_alpha,
-                    max_entities=args.max_num_of_entities
-                )
-            else:
-                # Use original Retrieve-then-Filter method
-                if retrieve_concepts is None:
-                    raise ImportError("retrieve_concepts not available. Please install MeaCap modules or use --use_entity_filtering")
-                detected_objects = retrieve_concepts(
-                    parser_model=parser_model,
-                    parser_tokenizer=parser_tokenizer,
-                    wte_model=wte_model,
-                    select_memory_captions=select_memory_captions,
-                    image_embeds=batch_image_embeds,
-                    device=device
-                )
+            # Filter: Extract key concepts using Retrieve-then-Filter
+            detected_objects = retrieve_concepts(
+                parser_model=parser_model,
+                parser_tokenizer=parser_tokenizer,
+                wte_model=wte_model,
+                select_memory_captions=select_memory_captions,
+                image_embeds=batch_image_embeds,
+                device=device
+            )
 
             # Compose discrete prompts (same as original ViECap)
             discrete_tokens = compose_discrete_prompts(tokenizer, detected_objects).unsqueeze(dim = 0).to(args.device)
@@ -318,19 +301,6 @@ if __name__ == '__main__':
     parser.add_argument("--memory_caption_path", type=str, default='data/memory/coco/memory_captions.json', help='memory bank captions file')
     parser.add_argument("--memory_caption_num", type=int, default=5, help='number of memory captions to retrieve')
     parser.add_argument("--offline_mode", action='store_true', default=False, help='Use offline mode (local_files_only=True)')
-    
-    # Entity Filtering (EF) arguments
-    parser.add_argument("--use_entity_filtering", action='store_true', default=False, 
-                       help='Use Entity Filtering (EF) instead of Retrieve-then-Filter for concept extraction')
-    parser.add_argument("--ef_filter_method", type=str, default='threshold', 
-                       choices=['threshold', 'normal', 'log_normal'],
-                       help='Filter method for Entity Filtering: threshold, normal, or log_normal')
-    parser.add_argument("--ef_threshold", type=int, default=1,
-                       help='Frequency threshold for threshold-based filtering (used when ef_filter_method=threshold)')
-    parser.add_argument("--ef_alpha", type=float, default=1.0,
-                       help='Alpha parameter for normal/log_normal filtering (used when ef_filter_method=normal/log_normal)')
-    parser.add_argument("--max_num_of_entities", type=int, default=5,
-                       help='Maximum number of entities to extract')
     
     args = parser.parse_args()
     print('args: {}\n'.format(vars(args)))
