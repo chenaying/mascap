@@ -17,7 +17,11 @@ from sentence_transformers import SentenceTransformer
 
 from ClipCap import ClipCaptionModel
 from utils import compose_discrete_prompts
-from utils.detect_utils import retrieve_concepts
+try:
+    from utils.detect_utils import retrieve_concepts
+except ImportError:
+    retrieve_concepts = None
+from utils.entity_filtering_utils import retrieve_concepts_ef
 from models.clip_utils import CLIP
 from search import beam_search, greedy_search, opt_search
 
@@ -129,14 +133,27 @@ def validation_nocaps_meacap(
             select_memory_ids = clip_score.topk(args.memory_caption_num, dim=-1)[1].squeeze(0)
             select_memory_captions = [memory_captions[idx] for idx in select_memory_ids]
 
-            detected_objects = retrieve_concepts(
-                parser_model=parser_model,
-                parser_tokenizer=parser_tokenizer,
-                wte_model=wte_model,
-                select_memory_captions=select_memory_captions,
-                image_embeds=batch_image_embeds,
-                device=device,
-            )
+            if args.use_entity_filtering:
+                detected_objects = retrieve_concepts_ef(
+                    select_memory_captions=select_memory_captions,
+                    filter_method=args.ef_filter_method,
+                    threshold=args.ef_threshold,
+                    alpha=args.ef_alpha,
+                    max_entities=args.max_num_of_entities,
+                )
+            else:
+                if retrieve_concepts is None:
+                    raise ImportError(
+                        "retrieve_concepts not available. Use --use_entity_filtering or fix MeaCap utils."
+                    )
+                detected_objects = retrieve_concepts(
+                    parser_model=parser_model,
+                    parser_tokenizer=parser_tokenizer,
+                    wte_model=wte_model,
+                    select_memory_captions=select_memory_captions,
+                    image_embeds=batch_image_embeds,
+                    device=device,
+                )
 
             discrete_tokens = compose_discrete_prompts(tokenizer, detected_objects).unsqueeze(dim=0).to(device)
             discrete_embeddings = model.word_embed(discrete_tokens)
@@ -282,6 +299,37 @@ if __name__ == "__main__":
     parser.add_argument("--memory_caption_path", type=str, default="data/memory/coco/memory_captions.json")
     parser.add_argument("--memory_caption_num", type=int, default=5)
     parser.add_argument("--offline_mode", action="store_true", default=False)
+    parser.add_argument(
+        "--use_entity_filtering",
+        action="store_true",
+        default=False,
+        help="Use Entity Filtering (EF) instead of parser-based Retrieve-then-Filter for concept extraction",
+    )
+    parser.add_argument(
+        "--ef_filter_method",
+        type=str,
+        default="threshold",
+        choices=["threshold", "normal", "log_normal"],
+        help="EF filter method",
+    )
+    parser.add_argument(
+        "--ef_threshold",
+        type=int,
+        default=1,
+        help="Frequency threshold when ef_filter_method=threshold",
+    )
+    parser.add_argument(
+        "--ef_alpha",
+        type=float,
+        default=1.0,
+        help="Alpha for normal/log_normal EF methods",
+    )
+    parser.add_argument(
+        "--max_num_of_entities",
+        type=int,
+        default=5,
+        help="Max entities to pass to discrete prompts after EF or parser path",
+    )
     args = parser.parse_args()
     print(f"args: {vars(args)}\n")
     main(args)
